@@ -87,6 +87,8 @@ def preprocess_raw_data(
     # 1. LOAD
     df_OSS = pd.read_excel(input_path)
 
+    processed_parquet = Path(settings.DATA_DIR) / "features.parquet"
+    processed_excel = Path(settings.DATA_DIR) / "features.xlsx"
     # filters
     df_OSS = df_OSS[df_OSS['NET_SPA'] != 0]
     df_OSS = df_OSS[df_OSS['NET_SPA'] < 2000]
@@ -302,4 +304,9 @@ def preprocess_raw_data(
     joblib.dump(pca_sbert, models_dir / "sbert_pca.pkl")
     joblib.dump(top_ngrams, models_dir / "title_top_ngrams.pkl")
 
+    # Sauvegarde parquet
+    df_OSS.to_parquet(processed_parquet, index=False)
+
+    # Sauvegarde excel
+    df_OSS.to_excel(processed_excel, index=False)
     return df_OSS
