@@ -87,7 +87,7 @@ def preprocess_raw_data(
     # 1. LOAD
     df_OSS = pd.read_excel(input_path)
 
-    # 2. TES FILTRES / CLEANING (copié-collé de ton notebook)
+    # filters
     df_OSS = df_OSS[df_OSS['NET_SPA'] != 0]
     df_OSS = df_OSS[df_OSS['NET_SPA'] < 2000]
 
@@ -117,7 +117,7 @@ def preprocess_raw_data(
     df_OSS['MonthName'] = df_OSS['CREATED_1'].dt.month_name()
     df_OSS['DayName'] = df_OSS['CREATED_1'].dt.day_name()
 
-    # 4. AM_GROUPING (tes conditions, inchangées)
+    # 4. AM_GROUPING
     cond_amother = (
         (df_OSS["DOC_TYPE"] == "AM") &
         (df_OSS["PROC_TYPE"].isin(["RSP", "DEA", "RPS"]))
@@ -141,7 +141,7 @@ def preprocess_raw_data(
         default=df_OSS["DOC_TYPE"]
     )
 
-    # 5. MAPPINGS PROC / DOC / NATURE (copié-collé)
+    # 5. MAPPINGS PROC / DOC / NATURE
     procedure_family_mapping = {
         "COD": "Legislative", "CNS": "Legislative",
         "INI": "Legislative", "INL": "Legislative",
@@ -205,7 +205,7 @@ def preprocess_raw_data(
     df_OSS['DOC_DOCEP_COMBO'] = df_OSS['DOC_TYPE'].astype(str) + "_" + df_OSS['DOC_EP_TEMPLATE'].astype(str)
     df_OSS['DOC_TYPE_PROCNATURE'] = df_OSS['DOC_TYPE'].astype(str) + "_" + df_OSS['PROC_NATURE'].astype(str)
 
-    # 6. NLP : n-grams + corr + colonnes binaires (copié)
+    # 6. NLP : n-grams + corr + colonnes binaires
     df_OSS["tokens"] = df_OSS["TITLE"].astype(str).map(preprocess_text)
     n = 3
     titre = f"{n}gram"
@@ -290,10 +290,10 @@ def preprocess_raw_data(
     df_OSS['TITLE_WORD_COUNT'] = df_OSS['TITLE'].astype(str).str.split().str.len()
     df_OSS['TITLE_CHAR_COUNT'] = df_OSS['TITLE'].astype(str).str.len()
 
-    # 10. MERGE AM (si souhaité)
-    # df_OSS = merge_amendments(df_OSS)
+    # 10. MERGE AM
+    df_OSS = merge_amendments(df_OSS)
 
-    # 11. SAUVEGARDE DES OBJETS NÉCESSAIRES POUR PREDICT
+    # 11. Save for predict
     models_dir = Path(settings.MODELS_DIR)
     models_dir.mkdir(parents=True, exist_ok=True)
 

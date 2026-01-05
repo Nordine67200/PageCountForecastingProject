@@ -16,7 +16,7 @@ from .config import settings
 
 class NetSpaPipeline:
     """
-    Pipeline entraînement + prédiction pour NET_SPA
+    Pipeline etraining + prediction for NET_SPA
     with stacking binary (TAIL_PRED) +  regression CatBoost.
     """
 
@@ -26,7 +26,7 @@ class NetSpaPipeline:
         cls_params: Dict[str, Any] | None = None,
         reg_params: Dict[str, Any] | None = None,
     ):
-        self.cat_features = cat_features  # noms de colonnes catégorielles
+        self.cat_features = cat_features  # categorical columns names
         self.cls_params = cls_params or dict(
             iterations=300,
             learning_rate=0.1,
@@ -49,7 +49,7 @@ class NetSpaPipeline:
         self.y_scaler: StandardScaler | None = None
         self.features: List[str] | None = None  # features for inference
 
-    # ---------- Entraînement ----------
+    # ---------- Training ----------
 
     def fit(
         self,
@@ -64,12 +64,12 @@ class NetSpaPipeline:
         y_reg: série NET_SPA brute
         y_bin: série binaire pour le classifieur (0/1)
         """
-        self.features = list(feature_cols)  # on fige l'ordre
+        self.features = list(feature_cols)
 
-        # indices CatBoost
+        # Catboost indexes
         cat_idx = [self.features.index(c) for c in self.cat_features if c in self.features]
 
-        # 1) Classifieur binaire
+        # 1) binary classifier
         X_cls = df[self.features]
         train_pool_cls = Pool(X_cls, y_bin, cat_features=cat_idx)
 
@@ -119,10 +119,10 @@ class NetSpaPipeline:
         pool_cls = Pool(X_cls, cat_features=cat_idx)
         tail_pred = self.cls_model.predict(pool_cls).astype(int).flatten()
 
-        # 2)
+        # 2) regression
         df_aug = df.copy()
         df_aug["TAIL_PRED"] = tail_pred
-        X_reg = df_aug[self.features]  # maintenant features = features_aug
+        X_reg = df_aug[self.features]  # features = features_aug
 
         cat_idx_aug = [i for i, col in enumerate(self.features) if col in self.cat_features]
         pool_reg = Pool(X_reg, cat_features=cat_idx_aug)
@@ -131,7 +131,7 @@ class NetSpaPipeline:
         y_pred = self.y_scaler.inverse_transform(y_scaled_pred.reshape(-1, 1)).flatten()
         return y_pred
 
-    # ---------- Sauvegarde / chargement ----------
+    # ---------- Save/load ----------
 
     def save(self, folder: str | Path) -> None:
         folder = Path(folder)
@@ -174,7 +174,7 @@ class NetSpaPipeline:
 
         pipeline.y_scaler = joblib.load(folder / "scaler.pkl")
         return pipeline
-# app/model_pipeline.py (à la fin)
+
 from .config import settings
 
 def train_model(features_path: str | None = None):
