@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from . import model_pipeline
 from .schemas import PredictRequest, PredictResponse
 
+
 router = APIRouter()
 
 @router.post("/extract")

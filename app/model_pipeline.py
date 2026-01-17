@@ -11,6 +11,9 @@ from catboost import CatBoostClassifier, CatBoostRegressor, Pool
 from sklearn.preprocessing import StandardScaler
 import joblib
 from .preprocessing import preprocess_raw_data
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, r2_score
+
 from .config import settings
 
 
@@ -177,37 +180,90 @@ class NetSpaPipeline:
 
 from .config import settings
 
-def train_model(features_path: str | None = None):
+def train_model(
+    features_path: str | None = None,
+    test_size: float = 0.3,
+    random_state: int = 42,
+):
     from pathlib import Path
 
     if features_path is None:
         features_path = Path(settings.DATA_DIR) / "features.parquet"
 
-    df = pd.read_parquet(features_path)
+    df = pd.read_parquet(features_path).replace({None: np.nan})
 
-    # ---- définir tes colonnes ici ----
-    target = "NET_SPA"
-
-    feature_cols = [c for c in df.columns if c != target]
-
-    # binaire (exemple) : tu peux adapter
-    y_reg = df[target]
-    y_bin = (df[target] > df[target].median()).astype(int)
-
-    cat_features = [
-        c for c in feature_cols
-        if df[c].dtype == "object"
+    feature_cols = [
+        'AM_GROUPING', 'DOSSIER_TYPE',
+        'PROC_DOC_COMBO', 'Committee_regrouped',
+        'DOC_DOCEP_COMBO', 'DOC_TYPE_PROCNATURE',
+        'Month', 'DayOfWeek', 'IsWeekend', 'Quarter',
+        'ROLE', 'DOC_EP_TEMPLATE',
+        'Procedure_Family', 'PROC_DOC_TYPE',
+        'DOC_TYPE', 'PROC_TYPE_NATURE',
+        'PROC_NATURE', 'TITLE_FREQ',
+        'TITLE_WORD_COUNT', 'TITLE_CHAR_COUNT'
     ]
 
-    pipeline = NetSpaPipeline(cat_features=cat_features)
-    pipeline.fit(df, feature_cols, y_reg, y_bin)
+    word2vec_features = [col for col in df.columns if col.startswith('TITLE_W2V_')]
+    sbert_features = [col for col in df.columns if col.startswith('TITLE_SBERT_')]
+    ngram_features = [col for col in df.columns if col.startswith('TITLE_ngram_')]
 
+    feature_cols = feature_cols + word2vec_features + sbert_features + ngram_features
+
+    target = "NET_SPA"
+
+    # --- y ---
+    y_reg = df[target]
+
+    # binaire (exemple) : médiane sur le TRAIN uniquement pour éviter fuite
+    # => on va d'abord split puis calculer y_bin sur train et appliquer au train/test via un cutoff.
+    X_train, X_test, y_train, y_test = train_test_split(
+        df[feature_cols],
+        y_reg,
+        test_size=test_size,
+        random_state=random_state,
+    )
+
+    cutoff = float(y_train.median())
+    y_bin_train = (y_train > cutoff).astype(int)
+    y_bin_test = (y_test > cutoff).astype(int)  # pas strictement nécessaire mais ok
+
+    # --- cat features ---
+    # Important: on détecte les cat_features sur le df original (ou X_train)
+    cat_features = [c for c in feature_cols if X_train[c].dtype == "object"]
+
+    # --- fit pipeline sur TRAIN uniquement ---
+    pipeline = NetSpaPipeline(cat_features=cat_features)
+    pipeline.fit(
+        df=pd.concat([X_train, y_train.rename(target)], axis=1),
+        feature_cols=feature_cols,
+        y_reg=y_train,
+        y_bin=y_bin_train,
+    )
+
+    # --- évaluation sur TEST ---
+    y_pred_test = pipeline.predict(X_test)
+
+    # métriques
+    rmse = float(np.sqrt(mean_squared_error(y_test, y_pred_test)))
+    r2 = float(r2_score(y_test, y_pred_test))
+    std_y = float(np.std(y_test))
+    sigmoid_score = sigmoid_rmse_score(rmse, std_y)
+
+    # --- save modèle ---
     pipeline.save(settings.MODELS_DIR)
 
     return {
-        "n_samples": len(df),
-        "n_features": len(feature_cols),
+        "n_train": int(len(X_train)),
+        "n_test": int(len(X_test)),
+        "n_features": int(len(feature_cols)),
+        "cutoff_bin_median_train": cutoff,
+        "rmse_test": rmse,
+        "r2_test": r2,
+        "std_y_test": std_y,
+        "sigmoid_rmse_test": float(sigmoid_score),
     }
+
 
 
 def run_preprocessing() -> str:
@@ -218,3 +274,14 @@ def run_preprocessing() -> str:
 
     df.to_parquet(processed_path, index=False)
     return str(processed_path)
+
+
+def sigmoid_rmse_score(rmse: float, std_y: float, k: float = 5.0, t: float = 0.8) -> float:
+    """
+    Sigmoid score based on RMSE normalized by standard deviation.
+    The smaller the RMSE, the closer the score is to 1.
+    """
+    if std_y == 0 or np.isnan(std_y):
+        return float("nan")
+    normalized_rmse = rmse / std_y
+    return float(1 / (1 + np.exp(k * (normalized_rmse - t))))
