@@ -1,0 +1,44 @@
+Installation guide for Linux environment settings:
+
+1) sudo dnf install -y python3 python3-pip python3-virtualenv git nginx
+2) Test, create a simple FastAPI application: - create app directory (mkdir -p app)
+                                              - Create and activate venv environment : python3 -m venv venv; source venv/bin/activate
+											  - Install FastAPI: pip install --upgrade pip; pip install fastapi "uvicorn[standard]"
+											  - Create a main.py: (from fastapi import FastAPI
+																   app = FastAPI()
+
+																   @app.get("/")
+																   def root():
+																	  return {"status": "ok"}
+
+																   @app.get("/health")
+																   def health():
+																	  return {"health": "green"})
+											  - Launch local API: uvicorn main:app --host 127.0.0.1 --port 8000
+											  - Open new Terminal and check: curl -s http://127.0.0.1:8000/health
+
+3) Settings of nginx to enable http request on the serveur and redirect to uvicorn: port 80 to port 8080: 
+   - create conf file sudo nano /etc/nginx/conf.d/fastapi.conf (server {
+    listen 80;
+    server_name _;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+})
+4) Once done, check sudo nginx -t (should display "syntax is ok" and "test is successfull)
+5) Enable and start nginx: sudo systemctl enable nginx; sudo systemctl start nginx
+6) Check: systemctl status nginx
+7) Navigate into app, activate venv and relaunch uvicorn: cd ~/app; source venv/bin/activate; uvicorn main:app --host 127.0.0.1 --port 8000
+8) Prepare projet: install locally requirements.txt file: pip freeze > requirements.tx
+
+
+
+
+
+
+
