@@ -1,0 +1,11 @@
+{
+  "trained_at": "2026-01-18T14:07:10.452671Z",
+  "n_train": 10272,
+  "n_test": 4403,
+  "n_features": 70,
+  "cutoff_bin_median_train": 6.54,
+  "rmse_test": 26.317757195787852,
+  "r2_test": 0.7985096617383552,
+  "std_y_test": 58.63025227567259,
+  "sigmoid_rmse_test": 0.8526597748281305
+}

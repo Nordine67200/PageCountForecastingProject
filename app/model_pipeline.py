@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import List, Dict, Any
-
+from datetime import datetime
 import numpy as np
 import pandas as pd
 from catboost import CatBoostClassifier, CatBoostRegressor, Pool
@@ -253,7 +253,8 @@ def train_model(
     # --- save modèle ---
     pipeline.save(settings.MODELS_DIR)
 
-    return {
+    metrics = {
+        "trained_at": datetime.utcnow().isoformat() + "Z",
         "n_train": int(len(X_train)),
         "n_test": int(len(X_test)),
         "n_features": int(len(feature_cols)),
@@ -263,6 +264,17 @@ def train_model(
         "std_y_test": std_y,
         "sigmoid_rmse_test": float(sigmoid_score),
     }
+
+    # --- save metrics json ---
+    metrics_dir = Path(settings.MODELS_DIR)
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    metrics_path = metrics_dir / "metrics.json"
+    with metrics_path.open("w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2)
+
+    # --- API response ---
+    return metrics
 
 
 

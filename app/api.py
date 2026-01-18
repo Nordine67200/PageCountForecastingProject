@@ -2,7 +2,10 @@
 from fastapi import APIRouter
 from . import model_pipeline
 from .schemas import PredictRequest, PredictResponse
-
+from pathlib import Path
+from .config import settings
+import json
+from fastapi import HTTPException
 
 router = APIRouter()
 
@@ -28,6 +31,19 @@ def predict(payload: PredictRequest):
 def preprocess():
     path = model_pipeline.run_preprocessing()
     return {"status": "ok", "features_path": path}
+
+@router.get("/getMetrics")
+def getMetrics():
+    metrics_path = Path(settings.MODELS_DIR) / "metrics.json"
+
+    if not metrics_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Metrics not found. Run /train first."
+        )
+
+    with metrics_path.open("r", encoding="utf-8") as f:
+        return json.load(f)
 
 @router.get("/health")
 def health():
