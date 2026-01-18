@@ -28,3 +28,7 @@ def predict(payload: PredictRequest):
 def preprocess():
     path = model_pipeline.run_preprocessing()
     return {"status": "ok", "features_path": path}
+
+@router.get("/health")
+def health():
+    return {"health": "green"}
