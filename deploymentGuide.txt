@@ -34,7 +34,18 @@ Installation guide for Linux environment settings:
 5) Enable and start nginx: sudo systemctl enable nginx; sudo systemctl start nginx
 6) Check: systemctl status nginx
 7) Navigate into app, activate venv and relaunch uvicorn: cd ~/app; source venv/bin/activate; uvicorn main:app --host 127.0.0.1 --port 8000
+
+Project preparation and deployment
 8) Prepare projet: install locally requirements.txt file: pip freeze > requirements.tx
+9) On EC2 Amazon Linux, clone git repo: git clone https://github.com/Nordine67200/PageCountForecastingProject.git pagecountForecasting
+10) In pagecountForecasting directory, create venv environment with python 3.11:  python3.11 -m venv venv
+11) Activate venv: source venv/bin/activate
+12) Install wheel for Linux environment: python -m pip install -U pip setuptools wheel
+13) Install all project libraries: pip install --no-cache-dir -r requirements-py311.txt
+    Beware: some libraries (like torch) will need to download around 1GB in memory, if /tmp is mounted with few memories -> create new tmdir
+	directory and change TMPDIR value to ask pip to use that directory
+14) Maybe it will be required to install stopwords from ntlk: python -c "import nltk; nltk.download('stopwords')"
+15) Launch uvicorn: uvicorn main:app --host 127.0.0.1 --port 8000 and check on browser http://url/docs 
 
 
 
