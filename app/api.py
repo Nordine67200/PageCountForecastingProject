@@ -24,8 +24,12 @@ def train():
 
 @router.post("/predict", response_model=PredictResponse)
 def predict(payload: PredictRequest):
-    net_spa = model_pipeline.predict(payload)
-    return PredictResponse(net_spa=net_spa)
+    net_spa, features, aligned_features = model_pipeline.predict(payload)
+    return PredictResponse(
+        net_spa=net_spa,
+        features=features,
+        aligned_features=aligned_features,
+    )
 
 @router.post("/preprocess")
 def preprocess():

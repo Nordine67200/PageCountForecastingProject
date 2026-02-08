@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
 from typing import List, Dict, Any
 from datetime import datetime
 import numpy as np
@@ -10,16 +11,44 @@ import pandas as pd
 from catboost import CatBoostClassifier, CatBoostRegressor, Pool
 from sklearn.preprocessing import StandardScaler
 import joblib
-from .preprocessing import preprocess_raw_data
+from .preprocessing import preprocess_raw_data, preprocess_one_record
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, r2_score
+from sentence_transformers import SentenceTransformer
+from .preprocessing import preprocess_text, simple_tokenize, title_to_vec
 
 from .config import settings
 
+MODELS_DIR = Path(settings.MODELS_DIR)
+
+# Artefacts
+TOP_NGRAMS = joblib.load(MODELS_DIR / "title_top_ngrams.pkl")
+W2V_MODEL = joblib.load(MODELS_DIR / "w2v_title.model")
+W2V_PCA = joblib.load(MODELS_DIR / "w2v_pca.pkl")
+SBERT_PCA = joblib.load(MODELS_DIR / "sbert_pca.pkl")
+
+# SBERT pretrained
+SBERT_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+
+# Meta.json to test expected columns
+with open(MODELS_DIR / "meta.json", "r", encoding="utf-8") as f:
+    META = json.load(f)
+
+FEATURE_COLS = META.get("feature_cols") or META.get("features") or META.get("columns")
+if FEATURE_COLS is None:
+    raise RuntimeError("meta.json is empty!")
+
+REG_MODEL = CatBoostRegressor()
+REG_MODEL.load_model(str(MODELS_DIR / "reg_model.cbm"))
+
+CLS_MODEL = CatBoostClassifier()
+CLS_MODEL.load_model(str(MODELS_DIR / "cls_model.cbm"))
+
+SCALER = joblib.load(str(MODELS_DIR / "scaler.pkl"))
 
 class NetSpaPipeline:
     """
-    Pipeline etraining + prediction for NET_SPA
+    Pipeline training + prediction for NET_SPA
     with stacking binary (TAIL_PRED) +  regression CatBoost.
     """
 
@@ -131,7 +160,9 @@ class NetSpaPipeline:
         pool_reg = Pool(X_reg, cat_features=cat_idx_aug)
 
         y_scaled_pred = self.reg_model.predict(pool_reg)
+        print(f'y scaled pred: {y_scaled_pred}')
         y_pred = self.y_scaler.inverse_transform(y_scaled_pred.reshape(-1, 1)).flatten()
+
         return y_pred
 
     # ---------- Save/load ----------
@@ -215,8 +246,7 @@ def train_model(
     # --- y ---
     y_reg = df[target]
 
-    # binaire (exemple) : médiane sur le TRAIN uniquement pour éviter fuite
-    # => on va d'abord split puis calculer y_bin sur train et appliquer au train/test via un cutoff.
+
     X_train, X_test, y_train, y_test = train_test_split(
         df[feature_cols],
         y_reg,
@@ -226,10 +256,10 @@ def train_model(
 
     cutoff = float(y_train.median())
     y_bin_train = (y_train > cutoff).astype(int)
-    y_bin_test = (y_test > cutoff).astype(int)  # pas strictement nécessaire mais ok
+    y_bin_test = (y_test > cutoff).astype(int)
 
     # --- cat features ---
-    # Important: on détecte les cat_features sur le df original (ou X_train)
+
     cat_features = [c for c in feature_cols if X_train[c].dtype == "object"]
 
     # --- fit pipeline sur TRAIN uniquement ---
@@ -251,7 +281,12 @@ def train_model(
     sigmoid_score = sigmoid_rmse_score(rmse, std_y)
 
     # --- save modèle ---
-    pipeline.save(settings.MODELS_DIR)
+    pipeline.save(MODELS_DIR)
+
+    df_test = df.loc[X_test.index].copy()
+    df_test["NEW_PREDICTION"] = y_pred_test.round(2)
+    df_test.to_excel(MODELS_DIR / "dfTest.xlsx")
+
 
     metrics = {
         "trained_at": datetime.utcnow().isoformat() + "Z",
@@ -266,7 +301,7 @@ def train_model(
     }
 
     # --- save metrics json ---
-    metrics_dir = Path(settings.MODELS_DIR)
+    metrics_dir = Path(MODELS_DIR)
     metrics_dir.mkdir(parents=True, exist_ok=True)
 
     metrics_path = metrics_dir / "metrics.json"
@@ -297,3 +332,37 @@ def sigmoid_rmse_score(rmse: float, std_y: float, k: float = 5.0, t: float = 0.8
         return float("nan")
     normalized_rmse = rmse / std_y
     return float(1 / (1 + np.exp(k * (normalized_rmse - t))))
+
+
+import pandas as pd
+
+def predict(payload):
+    raw = pd.DataFrame([payload.model_dump()])
+    feats = preprocess_one_record(raw)
+
+    base_cols = FEATURE_COLS[:]  # features
+    X_cls = feats.reindex(columns=base_cols, fill_value=0)
+
+    tail_pred = CLS_MODEL.predict(X_cls)
+    tail_pred = pd.Series(tail_pred).astype(int).to_numpy().flatten()
+    feats["TAIL_PRED"] = int(tail_pred[0])
+
+    # adding TAIL_PRED
+    if "TAIL_PRED" in base_cols:
+        features_aug = base_cols
+    else:
+        features_aug = base_cols + ["TAIL_PRED"]
+    X_reg = feats.reindex(columns=features_aug, fill_value=0)
+
+
+
+    y_scaled = REG_MODEL.predict(X_reg)
+    y_scaled = float(y_scaled[0])
+
+    print(f'y scaled: {y_scaled}')
+
+    y_real = SCALER.inverse_transform([[y_scaled]])[0][0]
+    net_spa = float(y_real)
+    print(f'net spa: {net_spa}')
+    return net_spa, feats.iloc[0].to_dict(), X_reg.iloc[0].to_dict()
+
