@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 from datetime import datetime, time
 
-st.set_page_config(page_title="Predict Page Count", layout="wide")
+st.set_page_config(page_title="Predict Page Count", layout="centered")
 
 st.title("📄 PageCount forecasting")
 
@@ -11,27 +11,22 @@ api_url = "http://127.0.0.1:8000/predict"
 
 
 with st.form("predict_form"):
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
         title = st.text_input("TITLE *", value="Insurance mediation (recast)")
         doc_type = st.text_input("DOC_TYPE", value="PF")
+        role = st.text_input("ROLE", value="MAIN")
+    with col2:
         dossier_type = st.text_input("DOSSIER_TYPE", value="ECON")
         proc_type = st.text_input("PROC_TYPE", value="COD")
-
-    with col2:
-        created_date = st.date_input("CREATED_1 (date)", value=datetime(2021, 6, 11))
-
-        proc_nature = st.text_input("PROC_NATURE", value="RCST")
-        role = st.text_input("ROLE", value="MAIN")
-
-    col3, col4 = st.columns(2)
-    with col3:
         doc_ep_template = st.text_input("DOC_EP_TEMPLATE", value="OTHR")
-    with col4:
+
+    with col3:
+        created_date = st.date_input("CREATED_1 (date)", value=datetime(2021, 6, 11))
+        proc_nature = st.text_input("PROC_NATURE", value="RCST")
         committee_1 = st.text_input("COMMITTEE_1", value="ECON")
 
-    # Options utiles
     display_debug = st.checkbox("Display debugging mode", value=True)
 
     submitted = st.form_submit_button("Predict")
