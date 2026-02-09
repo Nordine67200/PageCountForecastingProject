@@ -45,7 +45,8 @@ Project preparation and deployment
     Beware: some libraries (like torch) will need to download around 1GB in memory, if /tmp is mounted with few memories -> create new tmdir
 	directory and change TMPDIR value to ask pip to use that directory
 14) Maybe it will be required to install stopwords from ntlk: python -c "import nltk; nltk.download('stopwords')"
-15) Launch uvicorn: uvicorn app.main:app --host 127.0.0.1 --port 8000 and check on browser http://url/docs 
+15) Launch uvicorn: source venv/bin/activate; uvicorn app.main:app --host 127.0.0.1 --port 8000 and check on browser http://url/docs 
+16) streamlit run streamlit_app.py
 
 
 
