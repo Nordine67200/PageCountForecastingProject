@@ -1,7 +1,6 @@
 # app/schemas.py
 from typing import Dict, Any, Optional
 from datetime import datetime
-from typing import Optional, Any
 from pydantic import BaseModel, field_validator
 
 class PredictRequest(BaseModel):
@@ -20,7 +19,13 @@ class PredictResponse(BaseModel):
     features: Dict[str, Any]
     aligned_features: Optional[Dict[str, Any]] = None
 
+class PredictResponsePublic(BaseModel):
+    net_spa: float
 
+class PredictResponseDebug(BaseModel):
+    net_spa: float
+    features: Dict[str, Any]
+    aligned_features: Dict[str, Any]
 
 class PredictRequest(BaseModel):
     TITLE: str

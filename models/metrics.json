@@ -1,11 +1,11 @@
 {
-  "trained_at": "2026-02-08T11:40:39.634931Z",
+  "trained_at": "2026-02-13T15:56:34.653536Z",
   "n_train": 10272,
   "n_test": 4403,
   "n_features": 70,
   "cutoff_bin_median_train": 6.54,
-  "rmse_test": 25.301319293788033,
-  "r2_test": 0.8137729306474788,
+  "rmse_test": 27.018606231031203,
+  "r2_test": 0.7876352854869058,
   "std_y_test": 58.63025227567259,
-  "sigmoid_rmse_test": 0.8632202936962595
+  "sigmoid_rmse_test": 0.8449916410719733
 }
