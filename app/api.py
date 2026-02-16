@@ -8,7 +8,7 @@ from .schemas import PredictRequest, PredictResponsePublic, PredictResponseDebug
 from .config import settings
 from .jobs import submit_job, get_job
 
-router = APIRouter()
+router = APIRouter(prefix="/api")
 
 # ---------- ASYNC JOBS (submit) ----------
 

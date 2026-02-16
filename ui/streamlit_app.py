@@ -9,7 +9,22 @@ st.set_page_config(page_title="Predict Page Count", layout="centered")
 st.title("📄 PageCount forecasting")
 
 # Config API
-api_url = "http://127.0.0.1:8000/predict"
+def load_properties(path):
+    props = {}
+    with open(path) as f:
+        for line in f:
+            if "=" in line:
+                key, value = line.strip().split("=", 1)
+                props[key.strip()] = value.strip()
+    return props
+
+BASE_DIR = Path(__file__).resolve().parent
+config_path = BASE_DIR / "ui_config.properties"
+
+props = load_properties(config_path)
+
+api_url = props["api.base-url"].rstrip("/") + props["api.predict-path"]
+print(f'api url: {api_url}')
 
 # --- CONFIG DATA FILE ---
 BASE_DIR = Path(__file__).resolve().parent.parent
