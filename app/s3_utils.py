@@ -14,6 +14,7 @@ def download_file_from_s3(s3_key: str, local_path: str | Path) -> Path:
     local_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
+        print(f'path on S3: {settings.S3_BUCKET}, s3_key: {s3_key}, local path: {str(local_path)}')
         s3.download_file(settings.S3_BUCKET, s3_key, str(local_path))
     except ClientError as e:
         raise RuntimeError(f"Failed to download s3://{settings.S3_BUCKET}/{s3_key}") from e
