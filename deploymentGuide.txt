@@ -33,7 +33,7 @@ Installation guide for Linux environment settings:
 4) Once done, check sudo nginx -t (should display "syntax is ok" and "test is successfull)
 5) Enable and start nginx: sudo systemctl enable nginx; sudo systemctl start nginx
 6) Check: systemctl status nginx
-7) Navigate into app, activate venv and relaunch uvicorn: cd ~/app; source venv/bin/activate; uvicorn main:app --host 127.0.0.1 --port 8000
+7) Navigate into app, activate venv and relaunch uvicorn: cd ~/app; source venv/bin/activate; uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 Project preparation and deployment
 8) Prepare projet: install locally requirements.txt file: pip freeze > requirements.txt
@@ -46,7 +46,7 @@ Project preparation and deployment
 	directory and change TMPDIR value to ask pip to use that directory
 14) Maybe it will be required to install stopwords from ntlk: python -c "import nltk; nltk.download('stopwords')"
 15) Launch uvicorn: source venv/bin/activate; uvicorn app.main:app --host 127.0.0.1 --port 8000 and check on browser http://url/docs 
-16) streamlit run streamlit_app.py
+16) pip install streamlit; pip install openpyxl; streamlit run streamlit_app.py
 
 
 

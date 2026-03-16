@@ -1,0 +1,31 @@
+1) Define the “Job” contract for extract / preprocess / train OK
+
+POST /train → {job_id}
+
+GET /jobs/{job_id} → status / progress / error
+
+
+
+2) Move artifacts to S3 (models + preprocessing artifacts)
+
+With versioning / environment prefix / manifest file
+
+
+3) Dockerize (minimum viable version)
+
+To validate S3 / IAM / environment variables in real conditions
+
+
+4) Split the project into 2 services
+
+Service A: training / pipeline + workers
+
+Service B: serving / predict + health / metrics
+
+With shared storage (S3) and optionally a queue (SQS)
+
+
+5) Properly Dockerize both services
+
+Optimization, multi-stage builds, health checks, etc.
+  

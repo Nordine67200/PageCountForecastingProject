@@ -3,53 +3,31 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-
 from typing import List, Dict, Any
 from datetime import datetime
+
 import numpy as np
 import pandas as pd
+import joblib
+
 from catboost import CatBoostClassifier, CatBoostRegressor, Pool
 from sklearn.preprocessing import StandardScaler
-import joblib
-from .preprocessing import preprocess_raw_data, preprocess_one_record
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, r2_score
-from sentence_transformers import SentenceTransformer
-from .preprocessing import preprocess_text, simple_tokenize, title_to_vec
 
 from .config import settings
+from .preprocessing import preprocess_raw_data, preprocess_one_record
+from .s3_utils import download_file_from_s3, upload_file_to_s3
+
 
 MODELS_DIR = Path(settings.MODELS_DIR)
+DATA_DIR = Path(settings.DATA_DIR)
 
-# Artefacts
-TOP_NGRAMS = joblib.load(MODELS_DIR / "title_top_ngrams.pkl")
-W2V_MODEL = joblib.load(MODELS_DIR / "w2v_title.model")
-W2V_PCA = joblib.load(MODELS_DIR / "w2v_pca.pkl")
-SBERT_PCA = joblib.load(MODELS_DIR / "sbert_pca.pkl")
-
-# SBERT pretrained
-SBERT_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
-
-# Meta.json to test expected columns
-with open(MODELS_DIR / "meta.json", "r", encoding="utf-8") as f:
-    META = json.load(f)
-
-FEATURE_COLS = META.get("feature_cols") or META.get("features") or META.get("columns")
-if FEATURE_COLS is None:
-    raise RuntimeError("meta.json is empty!")
-
-REG_MODEL = CatBoostRegressor()
-REG_MODEL.load_model(str(MODELS_DIR / "reg_model.cbm"))
-
-CLS_MODEL = CatBoostClassifier()
-CLS_MODEL.load_model(str(MODELS_DIR / "cls_model.cbm"))
-
-SCALER = joblib.load(str(MODELS_DIR / "scaler.pkl"))
 
 class NetSpaPipeline:
     """
     Pipeline training + prediction for NET_SPA
-    with stacking binary (TAIL_PRED) +  regression CatBoost.
+    with stacking binary (TAIL_PRED) + regression CatBoost.
     """
 
     def __init__(
@@ -58,7 +36,7 @@ class NetSpaPipeline:
         cls_params: Dict[str, Any] | None = None,
         reg_params: Dict[str, Any] | None = None,
     ):
-        self.cat_features = cat_features  # categorical columns names
+        self.cat_features = cat_features
         self.cls_params = cls_params or dict(
             iterations=300,
             learning_rate=0.1,
@@ -79,9 +57,7 @@ class NetSpaPipeline:
         self.cls_model: CatBoostClassifier | None = None
         self.reg_model: CatBoostRegressor | None = None
         self.y_scaler: StandardScaler | None = None
-        self.features: List[str] | None = None  # features for inference
-
-    # ---------- Training ----------
+        self.features: List[str] | None = None
 
     def fit(
         self,
@@ -90,15 +66,8 @@ class NetSpaPipeline:
         y_reg: pd.Series,
         y_bin: pd.Series,
     ) -> "NetSpaPipeline":
-        """
-        df: dataframe complet d'entraînement
-        feature_cols: colonnes X de départ
-        y_reg: série NET_SPA brute
-        y_bin: série binaire pour le classifieur (0/1)
-        """
         self.features = list(feature_cols)
 
-        # Catboost indexes
         cat_idx = [self.features.index(c) for c in self.cat_features if c in self.features]
 
         # 1) binary classifier
@@ -108,7 +77,7 @@ class NetSpaPipeline:
         self.cls_model = CatBoostClassifier(**self.cls_params)
         self.cls_model.fit(train_pool_cls)
 
-        # 2) Prédiction binaire sur le même X (stacking interne)
+        # 2) stacking
         tail_pred = self.cls_model.predict(X_cls).astype(int).flatten()
         df_aug = df.copy()
         df_aug["TAIL_PRED"] = tail_pred
@@ -116,10 +85,9 @@ class NetSpaPipeline:
         features_aug = self.features + ["TAIL_PRED"]
         X_reg = df_aug[features_aug]
 
-
         cat_idx_aug = [i for i, col in enumerate(features_aug) if col in self.cat_features]
 
-        # 3) Standardize y: (y- mean)/std
+        # 3) scale target
         self.y_scaler = StandardScaler()
         y_scaled = self.y_scaler.fit_transform(y_reg.to_numpy().reshape(-1, 1)).flatten()
 
@@ -128,22 +96,13 @@ class NetSpaPipeline:
         self.reg_model = CatBoostRegressor(**self.reg_params)
         self.reg_model.fit(train_pool_reg)
 
-        # we keep features_aug for prediction
         self.features = features_aug
         return self
 
-    # ---------- Prédiction ----------
-
     def predict(self, df: pd.DataFrame) -> np.ndarray:
-        """
-        df : dataframe avec au minimum les colonnes nécessaires (self.features sans TAIL_PRED),
-        c.-à-d. les features d'origine.
-        Retourne NET_SPA (déstandardisé).
-        """
         if self.cls_model is None or self.reg_model is None or self.y_scaler is None:
             raise RuntimeError("Pipeline not fitted or not loaded correctly.")
 
-        # 1) binary prediction
         base_features = [c for c in self.features if c != "TAIL_PRED"]
         X_cls = df[base_features]
         cat_idx = [base_features.index(c) for c in self.cat_features if c in base_features]
@@ -151,21 +110,16 @@ class NetSpaPipeline:
         pool_cls = Pool(X_cls, cat_features=cat_idx)
         tail_pred = self.cls_model.predict(pool_cls).astype(int).flatten()
 
-        # 2) regression
         df_aug = df.copy()
         df_aug["TAIL_PRED"] = tail_pred
-        X_reg = df_aug[self.features]  # features = features_aug
+        X_reg = df_aug[self.features]
 
         cat_idx_aug = [i for i, col in enumerate(self.features) if col in self.cat_features]
         pool_reg = Pool(X_reg, cat_features=cat_idx_aug)
 
         y_scaled_pred = self.reg_model.predict(pool_reg)
-        print(f'y scaled pred: {y_scaled_pred}')
         y_pred = self.y_scaler.inverse_transform(y_scaled_pred.reshape(-1, 1)).flatten()
-
         return y_pred
-
-    # ---------- Save/load ----------
 
     def save(self, folder: str | Path) -> None:
         folder = Path(folder)
@@ -186,12 +140,12 @@ class NetSpaPipeline:
             "cls_params": self.cls_params,
             "reg_params": self.reg_params,
         }
-        (folder / "meta.json").write_text(json.dumps(meta))
+        (folder / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
 
     @classmethod
     def load(cls, folder: str | Path) -> "NetSpaPipeline":
         folder = Path(folder)
-        meta = json.loads((folder / "meta.json").read_text())
+        meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
 
         pipeline = cls(
             cat_features=meta["cat_features"],
@@ -201,51 +155,76 @@ class NetSpaPipeline:
         pipeline.features = meta["features"]
 
         pipeline.cls_model = CatBoostClassifier()
-        pipeline.cls_model.load_model(folder / "cls_model.cbm")
+        pipeline.cls_model.load_model(str(folder / "cls_model.cbm"))
 
         pipeline.reg_model = CatBoostRegressor()
-        pipeline.reg_model.load_model(folder / "reg_model.cbm")
+        pipeline.reg_model.load_model(str(folder / "reg_model.cbm"))
 
         pipeline.y_scaler = joblib.load(folder / "scaler.pkl")
         return pipeline
 
-from .config import settings
+
+def sigmoid_rmse_score(rmse: float, std_y: float, k: float = 5.0, t: float = 0.8) -> float:
+    if std_y == 0 or np.isnan(std_y):
+        return float("nan")
+    normalized_rmse = rmse / std_y
+    return float(1 / (1 + np.exp(k * (normalized_rmse - t))))
+
+
+def run_preprocessing() -> str:
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    raw_path = DATA_DIR / "SiriusOSS_export.xlsx"
+
+    download_file_from_s3(settings.S3_RAW_KEY, raw_path)
+
+    df = preprocess_raw_data(raw_path)
+
+    processed_path = DATA_DIR / "features.parquet"
+    df.to_parquet(processed_path, index=False)
+
+    return str(processed_path)
+
 
 def train_model(
     features_path: str | None = None,
     test_size: float = 0.3,
     random_state: int = 42,
 ):
-    from pathlib import Path
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
     if features_path is None:
-        features_path = Path(settings.DATA_DIR) / "features.parquet"
+        local_features_path = DATA_DIR / "features.parquet"
+        download_file_from_s3(settings.S3_FEATURES_KEY, local_features_path)
+        features_path = local_features_path
+    else:
+        features_path = Path(features_path)
 
     df = pd.read_parquet(features_path).replace({None: np.nan})
 
     feature_cols = [
-        'AM_GROUPING', 'DOSSIER_TYPE',
-        'PROC_DOC_COMBO', 'Committee_regrouped',
-        'DOC_DOCEP_COMBO', 'DOC_TYPE_PROCNATURE',
-        'Month', 'DayOfWeek', 'IsWeekend', 'Quarter',
-        'ROLE', 'DOC_EP_TEMPLATE',
-        'Procedure_Family', 'PROC_DOC_TYPE',
-        'DOC_TYPE', 'PROC_TYPE_NATURE',
-        'PROC_NATURE', 'TITLE_FREQ',
-        'TITLE_WORD_COUNT', 'TITLE_CHAR_COUNT'
+        "AM_GROUPING", "DOSSIER_TYPE",
+        "PROC_DOC_COMBO", "Committee_regrouped",
+        "DOC_DOCEP_COMBO", "DOC_TYPE_PROCNATURE",
+        "Month", "DayOfWeek", "IsWeekend", "Quarter",
+        "ROLE", "DOC_EP_TEMPLATE",
+        "Procedure_Family", "PROC_DOC_TYPE",
+        "DOC_TYPE", "PROC_TYPE_NATURE",
+        "PROC_NATURE", "TITLE_FREQ",
+        "TITLE_WORD_COUNT", "TITLE_CHAR_COUNT"
     ]
 
-    word2vec_features = [col for col in df.columns if col.startswith('TITLE_W2V_')]
-    sbert_features = [col for col in df.columns if col.startswith('TITLE_SBERT_')]
-    ngram_features = [col for col in df.columns if col.startswith('TITLE_ngram_')]
+    word2vec_features = [col for col in df.columns if col.startswith("TITLE_W2V_")]
+    sbert_features = [col for col in df.columns if col.startswith("TITLE_SBERT_")]
+    ngram_features = [col for col in df.columns if col.startswith("TITLE_ngram_")]
 
     feature_cols = feature_cols + word2vec_features + sbert_features + ngram_features
 
     target = "NET_SPA"
-
-    # --- y ---
     y_reg = df[target]
-
 
     X_train, X_test, y_train, y_test = train_test_split(
         df[feature_cols],
@@ -256,13 +235,9 @@ def train_model(
 
     cutoff = float(y_train.median())
     y_bin_train = (y_train > cutoff).astype(int)
-    y_bin_test = (y_test > cutoff).astype(int)
-
-    # --- cat features ---
 
     cat_features = [c for c in feature_cols if X_train[c].dtype == "object"]
 
-    # --- fit pipeline sur TRAIN uniquement ---
     pipeline = NetSpaPipeline(cat_features=cat_features)
     pipeline.fit(
         df=pd.concat([X_train, y_train.rename(target)], axis=1),
@@ -271,22 +246,20 @@ def train_model(
         y_bin=y_bin_train,
     )
 
-    # --- évaluation sur TEST ---
     y_pred_test = pipeline.predict(X_test)
 
-    # métriques
     rmse = float(np.sqrt(mean_squared_error(y_test, y_pred_test)))
     r2 = float(r2_score(y_test, y_pred_test))
     std_y = float(np.std(y_test))
     sigmoid_score = sigmoid_rmse_score(rmse, std_y)
 
-    # --- save modèle ---
+    # save local model artifacts
     pipeline.save(MODELS_DIR)
 
     df_test = df.loc[X_test.index].copy()
     df_test["NEW_PREDICTION"] = y_pred_test.round(2)
-    df_test.to_excel(MODELS_DIR / "dfTest.xlsx")
-
+    df_test_path = MODELS_DIR / "dfTest.xlsx"
+    df_test.to_excel(df_test_path, index=False)
 
     metrics = {
         "trained_at": datetime.utcnow().isoformat() + "Z",
@@ -300,69 +273,90 @@ def train_model(
         "sigmoid_rmse_test": float(sigmoid_score),
     }
 
-    # --- save metrics json ---
-    metrics_dir = Path(MODELS_DIR)
-    metrics_dir.mkdir(parents=True, exist_ok=True)
-
-    metrics_path = metrics_dir / "metrics.json"
+    metrics_path = MODELS_DIR / "metrics.json"
     with metrics_path.open("w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
 
-    # --- API response ---
+    # upload training outputs to S3
+    upload_file_to_s3(MODELS_DIR / "cls_model.cbm", f"{settings.S3_MODELS_PREFIX}/cls_model.cbm")
+    upload_file_to_s3(MODELS_DIR / "reg_model.cbm", f"{settings.S3_MODELS_PREFIX}/reg_model.cbm")
+    upload_file_to_s3(MODELS_DIR / "scaler.pkl", f"{settings.S3_MODELS_PREFIX}/scaler.pkl")
+    upload_file_to_s3(MODELS_DIR / "meta.json", f"{settings.S3_MODELS_PREFIX}/meta.json")
+    upload_file_to_s3(metrics_path, f"{settings.S3_MODELS_PREFIX}/metrics.json")
+    upload_file_to_s3(df_test_path, f"{settings.S3_MODELS_PREFIX}/dfTest.xlsx")
+
     return metrics
 
 
+def _load_predict_artifacts():
+    models_dir = Path(settings.MODELS_DIR)
+    models_dir.mkdir(parents=True, exist_ok=True)
 
-def run_preprocessing() -> str:
-    raw_path = Path(settings.DATA_DIR) / "SiriusOSS_export.xlsx"
-    processed_path = Path(settings.DATA_DIR) / "features.parquet"
+    sync_predict_dependencies_from_s3()
 
-    df = preprocess_raw_data(raw_path)  # ici tu fais TOUT ce que tu m'as envoyé
+    with open(models_dir / "meta.json", "r", encoding="utf-8") as f:
+        meta = json.load(f)
 
-    df.to_parquet(processed_path, index=False)
-    return str(processed_path)
+    feature_cols = meta.get("feature_cols") or meta.get("features") or meta.get("columns")
+    if feature_cols is None:
+        raise RuntimeError("meta.json is empty!")
 
+    reg_model = CatBoostRegressor()
+    reg_model.load_model(str(models_dir / "reg_model.cbm"))
 
-def sigmoid_rmse_score(rmse: float, std_y: float, k: float = 5.0, t: float = 0.8) -> float:
-    """
-    Sigmoid score based on RMSE normalized by standard deviation.
-    The smaller the RMSE, the closer the score is to 1.
-    """
-    if std_y == 0 or np.isnan(std_y):
-        return float("nan")
-    normalized_rmse = rmse / std_y
-    return float(1 / (1 + np.exp(k * (normalized_rmse - t))))
+    cls_model = CatBoostClassifier()
+    cls_model.load_model(str(models_dir / "cls_model.cbm"))
 
+    scaler = joblib.load(models_dir / "scaler.pkl")
 
-import pandas as pd
+    return feature_cols, cls_model, reg_model, scaler
+
+def sync_predict_dependencies_from_s3():
+    models_dir = Path(settings.MODELS_DIR)
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    required_files = [
+        "meta.json",
+        "reg_model.cbm",
+        "cls_model.cbm",
+        "scaler.pkl",
+        "title_top_ngrams.pkl",
+        "w2v_title.model",
+        "w2v_pca.pkl",
+        "sbert_pca.pkl",
+        "title_counts.pkl",
+    ]
+
+    for filename in required_files:
+        download_file_from_s3(
+            f"{settings.S3_MODELS_PREFIX}/{filename}",
+            models_dir / filename
+        )
 
 def predict(payload):
+    feature_cols, cls_model, reg_model, scaler = _load_predict_artifacts()
+
     raw = pd.DataFrame([payload.model_dump()])
     feats = preprocess_one_record(raw)
 
-    base_cols = FEATURE_COLS[:]  # features
+    base_cols = feature_cols[:]
     X_cls = feats.reindex(columns=base_cols, fill_value=0)
 
-    tail_pred = CLS_MODEL.predict(X_cls)
+    tail_pred = cls_model.predict(X_cls)
     tail_pred = pd.Series(tail_pred).astype(int).to_numpy().flatten()
     feats["TAIL_PRED"] = int(tail_pred[0])
 
-    # adding TAIL_PRED
     if "TAIL_PRED" in base_cols:
         features_aug = base_cols
     else:
         features_aug = base_cols + ["TAIL_PRED"]
+
     X_reg = feats.reindex(columns=features_aug, fill_value=0)
 
-
-
-    y_scaled = REG_MODEL.predict(X_reg)
+    y_scaled = reg_model.predict(X_reg)
     y_scaled = float(y_scaled[0])
 
-    print(f'y scaled: {y_scaled}')
-
-    y_real = SCALER.inverse_transform([[y_scaled]])[0][0]
+    y_real = scaler.inverse_transform([[y_scaled]])[0][0]
     net_spa = float(y_real)
-    print(f'net spa: {net_spa}')
-    return net_spa, feats.iloc[0].to_dict(), X_reg.iloc[0].to_dict()
 
+    return net_spa, feats.iloc[0].to_dict(), X_reg.iloc[0].to_dict()

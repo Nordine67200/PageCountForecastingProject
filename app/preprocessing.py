@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 
 from tqdm import tqdm
-from collections import Counter
 
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
@@ -20,16 +19,27 @@ from sentence_transformers import SentenceTransformer
 from wordcloud import STOPWORDS
 
 from .config import settings
+from .s3_utils import upload_file_to_s3
 import joblib
 
 
 models_dir = Path(settings.MODELS_DIR)
+data_dir = Path(settings.DATA_DIR)
 
-TOP_NGRAMS = joblib.load(models_dir / "title_top_ngrams.pkl")
-W2V_MODEL = joblib.load(models_dir / "w2v_title.model")
-W2V_PCA = joblib.load(models_dir / "w2v_pca.pkl")
-SBERT_PCA = joblib.load(models_dir / "sbert_pca.pkl")
 pca_dim_w = 30
+
+
+def load_predict_artifacts():
+
+    top_ngrams = joblib.load(models_dir / "title_top_ngrams.pkl")
+    w2v_model = joblib.load(models_dir / "w2v_title.model")
+    w2v_pca = joblib.load(models_dir / "w2v_pca.pkl")
+    sbert_pca = joblib.load(models_dir / "sbert_pca.pkl")
+    title_counts = joblib.load(models_dir / "title_counts.pkl")
+    sbert_encoder = SentenceTransformer("all-MiniLM-L6-v2")
+
+    return top_ngrams, w2v_model, w2v_pca, sbert_pca, title_counts, sbert_encoder
+
 
 def merge_amendments(
     df,
@@ -59,10 +69,12 @@ def merge_amendments(
 
     return pd.concat([df_other, df_am_merged], ignore_index=True)
 
+
 stop_words = set(stopwords.words("english")) | STOPWORDS | {
     "document", "title", "version", "european", "union",
     "parliament", "council"
 }
+
 
 def preprocess_text(text: str):
     text = text.lower()
@@ -70,6 +82,7 @@ def preprocess_text(text: str):
     tokens = word_tokenize(text)
     tokens = [t for t in tokens if t not in stop_words and len(t) > 2]
     return tokens
+
 
 def simple_tokenize(text):
     if pd.isna(text):
@@ -79,8 +92,10 @@ def simple_tokenize(text):
     tokens = text.split()
     return tokens
 
+
 def get_ngrams(tokens, n):
     return [" ".join(tg) for tg in ngrams(tokens, n)]
+
 
 def title_to_vec(tokens, model, dim):
     valid_tokens = [t for t in tokens if t in model.wv]
@@ -88,45 +103,48 @@ def title_to_vec(tokens, model, dim):
         return np.zeros(dim)
     return np.mean([model.wv[t] for t in valid_tokens], axis=0)
 
-def preprocess_raw_data(
-    input_path: Path | str,
-) -> pd.DataFrame:
+
+def preprocess_raw_data(input_path: Path | str) -> pd.DataFrame:
     input_path = Path(input_path)
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    models_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. LOAD
     df_OSS = pd.read_excel(input_path)
 
-    processed_parquet = Path(settings.DATA_DIR) / "features.parquet"
-    processed_excel = Path(settings.DATA_DIR) / "features.xlsx"
+    processed_parquet = data_dir / "features.parquet"
+    processed_excel = data_dir / "features.xlsx"
+
     # filters
-    df_OSS = df_OSS[df_OSS['NET_SPA'] != 0]
-    df_OSS = df_OSS[df_OSS['NET_SPA'] < 2000]
+    df_OSS = df_OSS[df_OSS["NET_SPA"] != 0]
+    df_OSS = df_OSS[df_OSS["NET_SPA"] < 2000]
 
-    df_OSS['ROLE'] = df_OSS['ROLE'].fillna('OTHR').astype(str)
-    df_OSS['PROC_TYPE'] = df_OSS['PROC_TYPE'].fillna('OTHR').astype(str)
-    df_OSS['PROC_NATURE'] = df_OSS['PROC_NATURE'].fillna('OTHR').astype(str)
-    df_OSS['DOC_EP_TEMPLATE']= df_OSS['DOC_EP_TEMPLATE'].fillna('OTHR').astype(str)
+    df_OSS["ROLE"] = df_OSS["ROLE"].fillna("OTHR").astype(str)
+    df_OSS["PROC_TYPE"] = df_OSS["PROC_TYPE"].fillna("OTHR").astype(str)
+    df_OSS["PROC_NATURE"] = df_OSS["PROC_NATURE"].fillna("OTHR").astype(str)
+    df_OSS["DOC_EP_TEMPLATE"] = df_OSS["DOC_EP_TEMPLATE"].fillna("OTHR").astype(str)
 
-    special_committees = ['ANIT', 'PEST', 'AIDA', 'COVI', 'INGE', 'ING2', 'BECA', 'TAX3', 'PEGA']
-    df_OSS['Committee_regrouped'] = df_OSS['COMMITTEE_1'].replace(special_committees, 'TEMP')
-    df_OSS['Committee_regrouped'] = df_OSS['Committee_regrouped'].replace('BUDE', 'BUDG')
+    special_committees = ["ANIT", "PEST", "AIDA", "COVI", "INGE", "ING2", "BECA", "TAX3", "PEGA"]
+    df_OSS["Committee_regrouped"] = df_OSS["COMMITTEE_1"].replace(special_committees, "TEMP")
+    df_OSS["Committee_regrouped"] = df_OSS["Committee_regrouped"].replace("BUDE", "BUDG")
 
-    df_OSS = df_OSS[df_OSS['CREATED_1'].notna()]
-    df_OSS['CREATED_1'] = pd.to_datetime(
-        df_OSS['CREATED_1'],
-        format='%d-%b-%y %H.%M.%S.%f',
-        errors='coerce'
+    df_OSS = df_OSS[df_OSS["CREATED_1"].notna()]
+    df_OSS["CREATED_1"] = pd.to_datetime(
+        df_OSS["CREATED_1"],
+        format="%d-%b-%y %H.%M.%S.%f",
+        errors="coerce"
     )
 
     # 3. FEATURES TEMPORELS
-    df_OSS['DateOnly'] = df_OSS['CREATED_1'].dt.date
-    df_OSS['Month'] = df_OSS['CREATED_1'].dt.month
-    df_OSS['Year'] = df_OSS['CREATED_1'].dt.year
-    df_OSS['DayOfWeek'] = df_OSS['CREATED_1'].dt.dayofweek
-    df_OSS['Quarter'] = df_OSS['CREATED_1'].dt.quarter
-    df_OSS['IsWeekend'] = df_OSS['DayOfWeek'].isin([5, 6]).astype(int)
-    df_OSS['MonthName'] = df_OSS['CREATED_1'].dt.month_name()
-    df_OSS['DayName'] = df_OSS['CREATED_1'].dt.day_name()
+    df_OSS["DateOnly"] = df_OSS["CREATED_1"].dt.date
+    df_OSS["Month"] = df_OSS["CREATED_1"].dt.month
+    df_OSS["Year"] = df_OSS["CREATED_1"].dt.year
+    df_OSS["DayOfWeek"] = df_OSS["CREATED_1"].dt.dayofweek
+    df_OSS["Quarter"] = df_OSS["CREATED_1"].dt.quarter
+    df_OSS["IsWeekend"] = df_OSS["DayOfWeek"].isin([5, 6]).astype(int)
+    df_OSS["MonthName"] = df_OSS["CREATED_1"].dt.month_name()
+    df_OSS["DayName"] = df_OSS["CREATED_1"].dt.day_name()
 
     # 4. AM_GROUPING
     cond_amother = (
@@ -162,59 +180,59 @@ def preprocess_raw_data(
         "REG": "Other", "DEA": "Other", "ACI": "Other",
         "RPS": "Other", "DEC": "Other"
     }
-    df_OSS['Procedure_Family'] = (
-        df_OSS['PROC_TYPE']
+    df_OSS["Procedure_Family"] = (
+        df_OSS["PROC_TYPE"]
         .map(procedure_family_mapping)
-        .fillna('NA')
+        .fillna("NA")
         .astype(str)
     )
 
     document_type_macro = {
-        'PV': 'PROC_REPORT', 'PR': 'PROC_REPORT', 'PA': 'PROC_REPORT',
-        'RR': 'PROC_REPORT', 'QO': 'PROC_REPORT', 'QZ': 'PROC_REPORT',
-        'DT': 'ADMIN_DISC', 'DI': 'ADMIN_DISC', 'RD': 'ADMIN_DISC',
-        'RE': 'ADMIN_DISC', 'AB': 'ADMIN_DISC', 'NT': 'ADMIN_DISC',
-        'AM': 'AMENDMENTS',
-        'CM': 'COMM_NOTES', 'AD': 'COMM_NOTES', 'AL': 'COMM_NOTES',
-        'LT': 'COMM_NOTES', 'CR': 'COMM_NOTES', 'CN': 'COMM_NOTES',
-        'OJ': 'OFFICIAL', 'DV': 'OFFICIAL', 'PE': 'OFFICIAL',
-        'ED': 'OFFICIAL', 'MN': 'OFFICIAL',
-        'SP': 'OPINION', 'NP': 'OPINION',
+        "PV": "PROC_REPORT", "PR": "PROC_REPORT", "PA": "PROC_REPORT",
+        "RR": "PROC_REPORT", "QO": "PROC_REPORT", "QZ": "PROC_REPORT",
+        "DT": "ADMIN_DISC", "DI": "ADMIN_DISC", "RD": "ADMIN_DISC",
+        "RE": "ADMIN_DISC", "AB": "ADMIN_DISC", "NT": "ADMIN_DISC",
+        "AM": "AMENDMENTS",
+        "CM": "COMM_NOTES", "AD": "COMM_NOTES", "AL": "COMM_NOTES",
+        "LT": "COMM_NOTES", "CR": "COMM_NOTES", "CN": "COMM_NOTES",
+        "OJ": "OFFICIAL", "DV": "OFFICIAL", "PE": "OFFICIAL",
+        "ED": "OFFICIAL", "MN": "OFFICIAL",
+        "SP": "OPINION", "NP": "OPINION",
     }
 
     proc_nature_mapping = {
-        'LEG': 'Legislative', 'INIT': 'Legislative',
-        'STINI': 'Legislative', 'TRINI': 'Legislative',
-        'BUD': 'Budgetary', 'PREBUD': 'Budgetary',
-        'DISCH': 'Budgetary',
-        'APPE': 'Approval',
-        'ANRE': 'Request',
-        'RESQ': 'Resolution',
-        'MOFU': 'Motion',
-        'DECL': 'Declaration',
-        'MR': 'Report',
-        'CNPE': 'Consultation',
-        'ENQCOM': 'Enquiry',
-        'DEAEX': 'DelegatedAct',
+        "LEG": "Legislative", "INIT": "Legislative",
+        "STINI": "Legislative", "TRINI": "Legislative",
+        "BUD": "Budgetary", "PREBUD": "Budgetary",
+        "DISCH": "Budgetary",
+        "APPE": "Approval",
+        "ANRE": "Request",
+        "RESQ": "Resolution",
+        "MOFU": "Motion",
+        "DECL": "Declaration",
+        "MR": "Report",
+        "CNPE": "Consultation",
+        "ENQCOM": "Enquiry",
+        "DEAEX": "DelegatedAct",
     }
 
-    df_OSS['PROC_NATURE_MACRO'] = (
-        df_OSS['PROC_NATURE']
+    df_OSS["PROC_NATURE_MACRO"] = (
+        df_OSS["PROC_NATURE"]
         .map(proc_nature_mapping)
-        .fillna('Other')
+        .fillna("Other")
     )
 
-    df_OSS['Document_Type_Macro'] = (
-        df_OSS['DOC_TYPE']
+    df_OSS["Document_Type_Macro"] = (
+        df_OSS["DOC_TYPE"]
         .map(document_type_macro)
-        .fillna('OTHR')
+        .fillna("OTHR")
     )
 
-    df_OSS['PROC_DOC_COMBO'] = df_OSS['PROC_TYPE'].astype(str) + "_" + df_OSS['DOC_EP_TEMPLATE'].astype(str)
-    df_OSS['PROC_DOC_TYPE'] = df_OSS['PROC_TYPE'].astype(str) + "_" + df_OSS['DOC_TYPE'].astype(str)
-    df_OSS['PROC_TYPE_NATURE'] = df_OSS['PROC_TYPE'].astype(str) + "_" + df_OSS['PROC_NATURE'].astype(str)
-    df_OSS['DOC_DOCEP_COMBO'] = df_OSS['DOC_TYPE'].astype(str) + "_" + df_OSS['DOC_EP_TEMPLATE'].astype(str)
-    df_OSS['DOC_TYPE_PROCNATURE'] = df_OSS['DOC_TYPE'].astype(str) + "_" + df_OSS['PROC_NATURE'].astype(str)
+    df_OSS["PROC_DOC_COMBO"] = df_OSS["PROC_TYPE"].astype(str) + "_" + df_OSS["DOC_EP_TEMPLATE"].astype(str)
+    df_OSS["PROC_DOC_TYPE"] = df_OSS["PROC_TYPE"].astype(str) + "_" + df_OSS["DOC_TYPE"].astype(str)
+    df_OSS["PROC_TYPE_NATURE"] = df_OSS["PROC_TYPE"].astype(str) + "_" + df_OSS["PROC_NATURE"].astype(str)
+    df_OSS["DOC_DOCEP_COMBO"] = df_OSS["DOC_TYPE"].astype(str) + "_" + df_OSS["DOC_EP_TEMPLATE"].astype(str)
+    df_OSS["DOC_TYPE_PROCNATURE"] = df_OSS["DOC_TYPE"].astype(str) + "_" + df_OSS["PROC_NATURE"].astype(str)
 
     # 6. NLP : n-grams + corr + colonnes binaires
     df_OSS["tokens"] = df_OSS["TITLE"].astype(str).map(preprocess_text)
@@ -251,13 +269,12 @@ def preprocess_raw_data(
     top_ngrams = list(top_corr["ngram"])
 
     for ng in top_ngrams:
-        df_OSS[f'TITLE_ngram_{ng}'] = df_OSS["TITLE"].str.contains(ng, case=False).astype(int)
+        df_OSS[f"TITLE_ngram_{ng}"] = df_OSS["TITLE"].str.contains(ng, case=False, regex=False).astype(int)
 
     # 7. Word2Vec + PCA
-    df_OSS['TITLE_TOKENS'] = df_OSS['TITLE'].astype(str).apply(simple_tokenize)
+    df_OSS["TITLE_TOKENS"] = df_OSS["TITLE"].astype(str).apply(simple_tokenize)
 
-    #sentences = df_OSS['TITLE_TOKENS'].tolist()
-    sentences = df_OSS['TITLE_TOKENS']
+    sentences = df_OSS["TITLE_TOKENS"]
     w2v_model = Word2Vec(
         sentences,
         vector_size=100,
@@ -269,19 +286,18 @@ def preprocess_raw_data(
     )
     dim = w2v_model.vector_size
 
-    title_embeddings = df_OSS['TITLE_TOKENS'].apply(lambda toks: title_to_vec(toks, w2v_model, dim))
+    title_embeddings = df_OSS["TITLE_TOKENS"].apply(lambda toks: title_to_vec(toks, w2v_model, dim))
     title_emb_matrix = np.vstack(title_embeddings.values)
-
 
     pca = PCA(n_components=pca_dim_w, random_state=42)
     title_emb_reduced = pca.fit_transform(title_emb_matrix)
 
     for i in range(pca_dim_w):
-        df_OSS[f'TITLE_W2V_{i+1}'] = title_emb_reduced[:, i]
+        df_OSS[f"TITLE_W2V_{i+1}"] = title_emb_reduced[:, i]
 
     # 8. SBERT + PCA
-    sbert_model = SentenceTransformer('all-MiniLM-L6-v2')
-    titles = df_OSS['TITLE'].fillna("").astype(str).tolist()
+    sbert_model = SentenceTransformer("all-MiniLM-L6-v2")
+    titles = df_OSS["TITLE"].fillna("").astype(str).tolist()
 
     title_embeddings = sbert_model.encode(
         titles,
@@ -295,58 +311,57 @@ def preprocess_raw_data(
     title_emb_reduced = pca_sbert.fit_transform(title_embeddings)
 
     for i in range(pca_dim_b):
-        df_OSS[f'TITLE_SBERT_{i+1}'] = title_emb_reduced[:, i]
+        df_OSS[f"TITLE_SBERT_{i+1}"] = title_emb_reduced[:, i]
 
     # 9. Features simples de TITLE
-    df_OSS['TITLE_FREQ'] = df_OSS['TITLE'].map(df_OSS['TITLE'].value_counts())
-    df_OSS['TITLE_WORD_COUNT'] = df_OSS['TITLE'].astype(str).str.split().str.len()
-    df_OSS['TITLE_CHAR_COUNT'] = df_OSS['TITLE'].astype(str).str.len()
+    df_OSS["TITLE_FREQ"] = df_OSS["TITLE"].map(df_OSS["TITLE"].value_counts())
+    df_OSS["TITLE_WORD_COUNT"] = df_OSS["TITLE"].astype(str).str.split().str.len()
+    df_OSS["TITLE_CHAR_COUNT"] = df_OSS["TITLE"].astype(str).str.len()
 
-    # --- Save TITLE frequency map for predict ---
+    # Save TITLE frequency map for predict
     title_counts = df_OSS["TITLE"].astype(str).value_counts().to_dict()
     joblib.dump(title_counts, models_dir / "title_counts.pkl")
 
     # 10. MERGE AM
     df_OSS = merge_amendments(df_OSS)
 
-    # 11. Save for predict
-
-    models_dir.mkdir(parents=True, exist_ok=True)
-
+    # 11. Save local outputs
     joblib.dump(w2v_model, models_dir / "w2v_title.model")
     joblib.dump(pca, models_dir / "w2v_pca.pkl")
     joblib.dump(pca_sbert, models_dir / "sbert_pca.pkl")
     joblib.dump(top_ngrams, models_dir / "title_top_ngrams.pkl")
 
-    # Sauvegarde parquet
     df_OSS.to_parquet(processed_parquet, index=False)
-
-    # Sauvegarde excel
     df_OSS.to_excel(processed_excel, index=False)
+
+    # 12. Upload outputs to S3
+    upload_file_to_s3(processed_parquet, f"{settings.S3_DATA_PREFIX}/features.parquet")
+    upload_file_to_s3(processed_excel, f"{settings.S3_DATA_PREFIX}/features.xlsx")
+
+    upload_file_to_s3(models_dir / "title_counts.pkl", f"{settings.S3_MODELS_PREFIX}/title_counts.pkl")
+    upload_file_to_s3(models_dir / "w2v_title.model", f"{settings.S3_MODELS_PREFIX}/w2v_title.model")
+    upload_file_to_s3(models_dir / "w2v_pca.pkl", f"{settings.S3_MODELS_PREFIX}/w2v_pca.pkl")
+    upload_file_to_s3(models_dir / "sbert_pca.pkl", f"{settings.S3_MODELS_PREFIX}/sbert_pca.pkl")
+    upload_file_to_s3(models_dir / "title_top_ngrams.pkl", f"{settings.S3_MODELS_PREFIX}/title_top_ngrams.pkl")
+
     return df_OSS
 
 
 def preprocess_one_record(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    df: DataFrame 1 ligne avec colonnes brutes.
-    Retourne: DataFrame 1 ligne avec features prêtes pour le modèle.
-    """
 
-    # --- Fillna / types comme en train
+    TOP_NGRAMS, W2V_MODEL, W2V_PCA, SBERT_PCA, TITLE_COUNTS, SBERT_ENCODER = load_predict_artifacts()
+
     for col in ["ROLE", "PROC_TYPE", "PROC_NATURE", "DOC_EP_TEMPLATE"]:
         df[col] = df[col].fillna("OTHR").astype(str)
 
-    # Committee regrouped
-    special_committees = ['ANIT', 'PEST', 'AIDA', 'COVI', 'INGE', 'ING2', 'BECA', 'TAX3', 'PEGA']
+    special_committees = ["ANIT", "PEST", "AIDA", "COVI", "INGE", "ING2", "BECA", "TAX3", "PEGA"]
     df["Committee_regrouped"] = df["COMMITTEE_1"].replace(special_committees, "TEMP")
     df["Committee_regrouped"] = df["Committee_regrouped"].replace("BUDE", "BUDG")
 
-    # --- CREATED_1 parsing (plus souple que ton format strict)
     df["CREATED_1"] = pd.to_datetime(df["CREATED_1"], errors="coerce")
     if df["CREATED_1"].isna().any():
         raise ValueError("CREATED_1 invalide (format date non parsable)")
 
-    # --- features temporelles
     df["DateOnly"] = df["CREATED_1"].dt.date
     df["Month"] = df["CREATED_1"].dt.month
     df["Year"] = df["CREATED_1"].dt.year
@@ -356,7 +371,6 @@ def preprocess_one_record(df: pd.DataFrame) -> pd.DataFrame:
     df["MonthName"] = df["CREATED_1"].dt.month_name()
     df["DayName"] = df["CREATED_1"].dt.day_name()
 
-    # --- AM_GROUPING
     cond_amother = (df["DOC_TYPE"] == "AM") & (df["PROC_TYPE"].isin(["RSP", "DEA", "RPS"]))
     cond_amdraftreport = (df["DOC_TYPE"] == "AM") & (~df["PROC_TYPE"].isin(["RSP", "DEA", "RPS"])) & (df["ROLE"] == "MAIN")
     cond_amdraftopinion = (df["DOC_TYPE"] == "AM") & (~df["PROC_TYPE"].isin(["RSP", "RPS"])) & (df["ROLE"].isin(["AVI", "AHE", "OAC"]))
@@ -367,7 +381,6 @@ def preprocess_one_record(df: pd.DataFrame) -> pd.DataFrame:
         default=df["DOC_TYPE"]
     )
 
-    # --- mappings
     procedure_family_mapping = {
         "COD": "Legislative", "CNS": "Legislative",
         "INI": "Legislative", "INL": "Legislative",
@@ -380,49 +393,46 @@ def preprocess_one_record(df: pd.DataFrame) -> pd.DataFrame:
     df["Procedure_Family"] = df["PROC_TYPE"].map(procedure_family_mapping).fillna("NA").astype(str)
 
     document_type_macro = {
-        'PV': 'PROC_REPORT', 'PR': 'PROC_REPORT', 'PA': 'PROC_REPORT',
-        'RR': 'PROC_REPORT', 'QO': 'PROC_REPORT', 'QZ': 'PROC_REPORT',
-        'DT': 'ADMIN_DISC', 'DI': 'ADMIN_DISC', 'RD': 'ADMIN_DISC',
-        'RE': 'ADMIN_DISC', 'AB': 'ADMIN_DISC', 'NT': 'ADMIN_DISC',
-        'AM': 'AMENDMENTS',
-        'CM': 'COMM_NOTES', 'AD': 'COMM_NOTES', 'AL': 'COMM_NOTES',
-        'LT': 'COMM_NOTES', 'CR': 'COMM_NOTES', 'CN': 'COMM_NOTES',
-        'OJ': 'OFFICIAL', 'DV': 'OFFICIAL', 'PE': 'OFFICIAL',
-        'ED': 'OFFICIAL', 'MN': 'OFFICIAL',
-        'SP': 'OPINION', 'NP': 'OPINION',
+        "PV": "PROC_REPORT", "PR": "PROC_REPORT", "PA": "PROC_REPORT",
+        "RR": "PROC_REPORT", "QO": "PROC_REPORT", "QZ": "PROC_REPORT",
+        "DT": "ADMIN_DISC", "DI": "ADMIN_DISC", "RD": "ADMIN_DISC",
+        "RE": "ADMIN_DISC", "AB": "ADMIN_DISC", "NT": "ADMIN_DISC",
+        "AM": "AMENDMENTS",
+        "CM": "COMM_NOTES", "AD": "COMM_NOTES", "AL": "COMM_NOTES",
+        "LT": "COMM_NOTES", "CR": "COMM_NOTES", "CN": "COMM_NOTES",
+        "OJ": "OFFICIAL", "DV": "OFFICIAL", "PE": "OFFICIAL",
+        "ED": "OFFICIAL", "MN": "OFFICIAL",
+        "SP": "OPINION", "NP": "OPINION",
     }
 
     proc_nature_mapping = {
-        'LEG': 'Legislative', 'INIT': 'Legislative',
-        'STINI': 'Legislative', 'TRINI': 'Legislative',
-        'BUD': 'Budgetary', 'PREBUD': 'Budgetary',
-        'DISCH': 'Budgetary',
-        'APPE': 'Approval',
-        'ANRE': 'Request',
-        'RESQ': 'Resolution',
-        'MOFU': 'Motion',
-        'DECL': 'Declaration',
-        'MR': 'Report',
-        'CNPE': 'Consultation',
-        'ENQCOM': 'Enquiry',
-        'DEAEX': 'DelegatedAct',
+        "LEG": "Legislative", "INIT": "Legislative",
+        "STINI": "Legislative", "TRINI": "Legislative",
+        "BUD": "Budgetary", "PREBUD": "Budgetary",
+        "DISCH": "Budgetary",
+        "APPE": "Approval",
+        "ANRE": "Request",
+        "RESQ": "Resolution",
+        "MOFU": "Motion",
+        "DECL": "Declaration",
+        "MR": "Report",
+        "CNPE": "Consultation",
+        "ENQCOM": "Enquiry",
+        "DEAEX": "DelegatedAct",
     }
 
     df["PROC_NATURE_MACRO"] = df["PROC_NATURE"].map(proc_nature_mapping).fillna("Other")
     df["Document_Type_Macro"] = df["DOC_TYPE"].map(document_type_macro).fillna("OTHR")
 
-    # combos
     df["PROC_DOC_COMBO"] = df["PROC_TYPE"].astype(str) + "_" + df["DOC_EP_TEMPLATE"].astype(str)
     df["PROC_DOC_TYPE"] = df["PROC_TYPE"].astype(str) + "_" + df["DOC_TYPE"].astype(str)
     df["PROC_TYPE_NATURE"] = df["PROC_TYPE"].astype(str) + "_" + df["PROC_NATURE"].astype(str)
     df["DOC_DOCEP_COMBO"] = df["DOC_TYPE"].astype(str) + "_" + df["DOC_EP_TEMPLATE"].astype(str)
     df["DOC_TYPE_PROCNATURE"] = df["DOC_TYPE"].astype(str) + "_" + df["PROC_NATURE"].astype(str)
 
-    # --- NLP ngrams
     for ng in TOP_NGRAMS:
         df[f"TITLE_ngram_{ng}"] = df["TITLE"].astype(str).str.contains(ng, case=False, regex=False).astype(int)
 
-    # --- Word2Vec + PCA
     df["TITLE_TOKENS"] = df["TITLE"].astype(str).apply(simple_tokenize)
     dim = W2V_MODEL.vector_size
     vec = df["TITLE_TOKENS"].apply(lambda toks: title_to_vec(toks, W2V_MODEL, dim))
@@ -431,33 +441,18 @@ def preprocess_one_record(df: pd.DataFrame) -> pd.DataFrame:
     for i in range(reduced.shape[1]):
         df[f"TITLE_W2V_{i+1}"] = reduced[:, i]
 
-    # --- SBERT + PCA
     titles = df["TITLE"].fillna("").astype(str).tolist()
-    SBERT_ENCODER = SentenceTransformer("all-MiniLM-L6-v2")
     emb = SBERT_ENCODER.encode(titles, show_progress_bar=False)
     emb = np.array(emb)
-
     emb_reduced = SBERT_PCA.transform(emb)
 
-    pca_dim_b = emb_reduced.shape[1]
-    print(f'pca dim: {pca_dim_b}')
-    for i in range(pca_dim_b):
+    for i in range(emb_reduced.shape[1]):
         df[f"TITLE_SBERT_{i + 1}"] = emb_reduced[:, i]
 
-
-    # --- Features simples TITLE
-    print(f'TITLE: {df["TITLE"]}')
     df["TITLE_WORD_COUNT"] = df["TITLE"].astype(str).str.split().str.len()
-    print(f'word count: {df["TITLE_WORD_COUNT"] }')
     df["TITLE_CHAR_COUNT"] = df["TITLE"].astype(str).str.len()
-    print(f'char count: {df["TITLE_CHAR_COUNT"]}')
 
-    # TITLE_FREQ
-    TITLE_COUNTS = joblib.load(models_dir / "title_counts.pkl")
     title = df["TITLE"].astype(str)
     df["TITLE_FREQ"] = title.map(lambda t: int(TITLE_COUNTS.get(t, 1)))
 
-
-
     return df
-

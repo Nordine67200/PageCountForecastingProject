@@ -10,29 +10,7 @@ from .jobs import submit_job, get_job
 
 router = APIRouter()
 
-# ---------- ASYNC JOBS (submit) ----------
 
-@router.post("/extract")
-def extract():
-    job = submit_job("extract", model_pipeline.run_extraction)
-    return {"status": "accepted", "job_id": job.id}
-
-@router.post("/preprocess")
-def preprocess():
-    job = submit_job("preprocess", model_pipeline.run_preprocessing)
-    return {"status": "accepted", "job_id": job.id}
-
-@router.post("/train")
-def train():
-    job = submit_job("train", model_pipeline.train_model)
-    return {"status": "accepted", "job_id": job.id}
-
-@router.get("/jobs/{job_id}")
-def job_status(job_id: str):
-    job = get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job.to_dict()
 
 # ---------- PREDICT (sync) ----------
 
@@ -60,4 +38,21 @@ def getMetrics():
 
 @router.get("/health")
 def health():
+    models_dir = Path(settings.MODELS_DIR)
+
+    required_files = [
+        "cls_model.cbm",
+        "reg_model.cbm",
+        "scaler.pkl",
+        "meta.json",
+    ]
+
+    missing = [f for f in required_files if not (models_dir / f).exists()]
+
+    if missing:
+        return {
+            "health": "degraded",
+            "missing_models": missing
+        }
+
     return {"health": "green"}
