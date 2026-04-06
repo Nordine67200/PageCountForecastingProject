@@ -1,18 +1,67 @@
-ApiFunction:
-  Type: AWS::Serverless::Function
-  Properties:
-    Runtime: python3.11
-    Handler: lambda_handler.handler
-    CodeUri: src/
-    MemorySize: 1024
-    Timeout: 30
-    Policies:
-      - AWSLambdaBasicExecutionRole
-      - S3CrudPolicy:
-          BucketName: !Ref AppBucket
-    Events:
-      Api:
-        Type: Api
-        Properties:
-          Path: /{proxy+}
-          Method: ANY
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: API Python serverless with Lambda, API Gateway and S3
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+
+Resources:
+  AppBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub pagecount-api-${Environment}-${AWS::AccountId}-${AWS::Region}
+
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub pagecount-api-${Environment}
+      StageName: !Ref Environment
+      EndpointConfiguration:
+        Type: REGIONAL
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub pagecount-api-${Environment}
+      Runtime: python3.11
+      Handler: lambda_handler.handler
+      CodeUri: src/
+      MemorySize: 1024
+      Timeout: 30
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3CrudPolicy:
+            BucketName: !Ref AppBucket
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref AppBucket
+          AWS_REGION: !Ref AWS::Region
+          ENVIRONMENT: !Ref Environment
+      Events:
+        ProxyApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /{proxy+}
+            Method: ANY
+        RootApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /
+            Method: ANY
+
+Outputs:
+  ApiUrl:
+    Description: API's url
+    Value: !Sub https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}
+
+  BucketName:
+    Description: S3 bucket name
+    Value: !Ref AppBucket
