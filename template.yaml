@@ -29,7 +29,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub pagecount-api-${Environment}
-      Runtime: python3.11
+      Runtime: python3.9
       Handler: lambda_handler.handler
       CodeUri: .
       MemorySize: 1024
