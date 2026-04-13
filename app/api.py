@@ -6,7 +6,6 @@ import json
 from . import model_pipeline
 from .schemas import PredictRequest, PredictResponsePublic, PredictResponseDebug
 from .config import settings
-from .jobs import submit_job, get_job
 
 router = APIRouter()
 
