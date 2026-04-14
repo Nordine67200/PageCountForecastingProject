@@ -3,24 +3,16 @@ import pandas as pd
 import numpy as np
 import re
 from pathlib import Path
-
-from tqdm import tqdm
-
 from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
 from nltk.util import ngrams
-
-from scipy.stats import pointbiserialr
-
-from gensim.models import Word2Vec
 from sklearn.decomposition import PCA
-
 from sentence_transformers import SentenceTransformer
 from wordcloud import STOPWORDS
+import joblib
 
 from .config import settings
 from .s3_utils import upload_file_to_s3
-import joblib
+
 
 
 models_dir = Path(settings.MODELS_DIR)
