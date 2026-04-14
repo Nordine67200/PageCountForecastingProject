@@ -1,22 +1,17 @@
 # app/model_pipeline.py
-from __future__ import annotations
-
 import json
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import joblib
 
-from catboost import CatBoostClassifier, CatBoostRegressor, Pool
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, r2_score
+from catboost import CatBoostClassifier, CatBoostRegressor
 
 from .config import settings
-from .preprocessing import preprocess_raw_data, preprocess_one_record
+from .preprocessing import preprocess_one_record
 from .s3_utils import download_file_from_s3, upload_file_to_s3
 
 
